@@ -1,0 +1,105 @@
+LG 16S Battery Module to CAN Adapter
+====================================
+
+This module permits LG 16S battery modules to be monitored and controlled over CAN Bus. Communication with
+the LG modules takes place via the proprietary daisychain interface on each battery module. Up to 16
+modules can be connected in a clain, and a single CAN module is required at the positive end of the chain.
+
+Connections
+===========
+
+The following connections should be made. Each pair of wires should be twisted together (approx 360 degrees per inch).
+
+1.CANH - This is CANL! Connect this to your CAN bus. Note the incorrectly labeled polarity.
+2.CNAL - This is CANH! Connect this to your CAN bus. Note the incorrectly labeled polarity.
+3.+12v - Positive power supply. This can be connected to a normal vehicle 12v supply or any power supply between 4v and 15v.
+4.GND  - Connect to your common low voltage ground.
+
+If you are using Arduino, all 4 connections can simply go to an Arduino CAN shield.
+
+BATT - This should be connected to the battery chain. Only pins 1 & 2 are required. They
+       should be twisted together in the same way as the CAN wiring. OEM cables are compatible.
+
+1 ------------ 1
+2 ------------ 2
+3              3 (Connection not required but may be beneficial to cable strength)
+4              4 (Connection not required but may be beneficial to cable strength)
+
+Jumpers
+=======
+
+CAN_TERM - This jumper should be connected if this board is the final device in your CAN bus. Connect it if you
+           are connecting direcly to one other device such as an Arduino. This will connect a 120 Ohm resistor
+           between CANL and CANH.
+
+CONF1    - If you intend to use two of these devices on the CAN bus, connect this jumper on the second device.
+           This will change the CAN ID to avoid conflicts.
+
+CAN Messages Transmitted
+========================
+
+The adapter will transmit CAN messages in the following format:
+
+ID      : 0x4f0 (0x4f1 if Jumper CONF1 is connected)
+Byte 0  : Module ID (0-15)
+Byte 1  : Cell ID (Measurements 0-15 of each module are cell voltages)
+Byte 2-3: Cell voltage where 0x0000 is 0.0v and 0xffff is 5.0v. Big endian.
+
+ID      : 0x4f0 (0x4f1 if Jumper CONF1 is connected)
+Byte 0  : Module ID (0-15)
+Byte 1  : Temperature sensor ID (Measurements 16-23 of each module are temperatures)
+Byte 2-3: Outer temperature of battery module. Big endian. See table below for details.
+
+ID      : 0x4f0 (0x4f1 if Jumper CONF1 is connected)
+Byte 0  : Module ID (0-15)
+Byte 1  : 0xff
+Byte 2-3: Balancing bitmap. Identifies which cells are currently being dissharged. LSB is cell 0.
+
+In addition to cell voltages, the following extra status message is sent:
+
+ID      : 0x4f0 (0x4f1 if Jumper CONF1 is connected)
+Byte 0  : 0xff (Module 0xff is the adapter itself)
+Byte 1  : 0xff (Measurement ID 0xff is status)
+Byte 2  : Number of modules detected
+Byte 3  : Communication error counter. If a module fails to respond, this counter is incremented and the whole chain is reset.
+
+Temperature sensors
+===================
+
+ID      Info
+--      ----
+16      AUX7 - Unknown - probably internal battery temperature sensor. Scale unknown.
+17      External NTC - negative side.
+18      External NTC - positive side.
+19      PCB Temerature. Scale unknown but values above 1v (13107) are safe. Balancing is disabled by the adapter below this value.
+20      PCB Temerature. Scale unknown but values above 1v (13107) are safe. Balancing is disabled by the adapter below this value.
+21      PCB Temerature. Scale unknown but values above 1v (13107) are safe. Balancing is disabled by the adapter below this value.
+22      PCB Temerature. Scale unknown but values above 1v (13107) are safe. Balancing is disabled by the adapter below this value.
+23      AUX0 - probably unused. Reads close to 0v
+
+External NTC sesors
+===================
+
+The following calculation can be used to convert the readong for an External NTC to a temperature:
+
+float temperature(uint16_t adc) {
+  float r = 0.0000000347363427499292f * adc * adc - 0.001025770762903f * adc + 2.68235340614337f;
+  float t = log(r) * -30.5280964239816f + 95.6841501312447f;
+  return t;
+}
+
+This code will not work for the PCB temperature sensors and will probably not work for AUX7.
+
+CAN Messages Received
+=====================
+
+The adapter listens for CAN messages in the following format. This message will instruct cells in all modules with a measured
+voltage above the specified voltage to self-discharge for a period of 1 second. The specified voltage would usually be the
+voltage of the most discharged cell in the chain. This message must be received at least once per second (2Hz recommended) to
+balance continuously. Note: For thermal safety, only one cell with the highest volage in each module will be discharged at a
+time, but in time, all cells will discharge to the requested voltage.
+
+ID      : 0x4f8 (note: all adapters will respond regardless of CONF1 jumper)
+Byte 0  : 0x00 (Balance)
+Byte 1-2: Cell voltage threshold where 0x0000 is 0.0v and 0xffff is 5.0v
+
