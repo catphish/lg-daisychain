@@ -18,9 +18,14 @@ void balance(float voltage) {
 
 void loop() {
   delay(500);
-  // This program is current set up to balance to 3.5v all the time for testing.
-  // You probably want to set this to the voltage of the lowest cell and probably
-  // only above a certain minimum (eg your max charge).
+  // This program is current set up to balance to 3.8v all the time for testing.
+
+  // You probably want to delect the lowest cell voltage in the pack and set this
+  // a couple of mV higher than the detected minimum.
+
+  // You probably also only want to balance above a specified maximum voltage so
+  // that you are only top balancing.
+
   balance(3.8);
 }
 
