@@ -103,3 +103,7 @@ ID      : 0x4f8 (note: all adapters will respond regardless of CONF1 jumper)
 Byte 0  : 0x00 (Balance)
 Byte 1-2: Cell voltage threshold where 0x0000 is 0.0v and 0xffff is 5.0v
 
+The following message will attempt to reset and re-identify all modules in the chain.
+ID      : 0x4f8 (note: all adapters will respond regardless of CONF1 jumper)
+Byte 0  : 0x01 (Reset)
+
