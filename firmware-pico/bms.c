@@ -4,6 +4,9 @@
 #include "bms.pio.h"
 #include <math.h>
 
+// Min voltage to enable balancing. 197 = 15mV
+#define BALANCE_MIN 197
+
 // Define pins for RS485 transceiver
 #define SERIAL_IN     28
 #define SERIAL_MASTER 27
@@ -11,12 +14,17 @@
 
 // Buffer for received data
 uint8_t rx_data_buffer[128];
+
 uint8_t module_count = 0;
 uint8_t error_count = 0;
 uint16_t balance_threshold = 0;
 uint16_t cell_voltage[16][16];
 uint16_t aux_voltage[16][8];
 uint16_t balance_bitmap[16];
+
+// Variables for balancing process
+uint16_t max_voltage;
+uint16_t min_voltage;
 
 // PIO and state machine selection
 PIO pio = pio0;
@@ -188,6 +196,8 @@ softreset:
 
       // Collect voltages and set balancing on up to 16 modules
       // We want to complete this loop as fast as possible because balancing must be disabled during measurement
+      max_voltage = 0;
+      min_voltage = 5;
       for(int module = 0; module < module_count; module++) {
         // Clear the input FIFO just in case
         pio_sm_clear_fifos(pio, SM_RX);
@@ -203,6 +213,8 @@ softreset:
           for(int cell=0; cell<16; cell++) {
             // nb. Cells are in reverse, cell 16 is reported first
             cell_voltage[module][cell] = rx_data_buffer[(15-cell)*2+1] << 8 | rx_data_buffer[(15-cell)*2+2];
+            if(cell_voltage[module][cell] > max_voltage) max_voltage = cell_voltage[module][cell];
+            if(cell_voltage[module][cell] < min_voltage) min_voltage = cell_voltage[module][cell];
             // Balancing
             if(pcb_below_temp(module)) // Don't balance if PCB is hot
               if(balance_threshold) // Don't balance unless threshold set
@@ -223,8 +235,24 @@ softreset:
       }
       //printf("Measurement complete in %i ms\n", (time_us_32() - previous_measurement)/1000);
 
+      // Balancing
+      if(max_voltage > 53738) { // 4.1V
+        if(max_voltage > min_voltage + BALANCE_MIN) { // 15mV
+          // Activate balancing
+          balance_threshold = min_voltage + BALANCE_MIN; // 15mV
+          float v = balance_threshold * 5.0f / 65535.0f;
+          printf("BALANCING: ACTIVE (%.4fV)\n", v);
+        } else {
+          // Cells are balanced
+          balance_threshold = 0;
+          printf("BALANCING: BALANCED\n");
+        }
+        // At least one cell is above 4.1V, lets balance!
+      } else {
+        balance_threshold = 0;
+        printf("BALANCING: INACTIVE\n");
+      }
       //printf("Balancing voltage: %f\n", balance_threshold * 5.0f / 65535.0f);
-      balance_threshold = 0;
 
       // Loop through all modules again to process data
       for(int module = 0; module < module_count; module++) {
