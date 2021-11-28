@@ -197,7 +197,7 @@ softreset:
       // Collect voltages and set balancing on up to 16 modules
       // We want to complete this loop as fast as possible because balancing must be disabled during measurement
       max_voltage = 0;
-      min_voltage = 5;
+      min_voltage = 65535;
       for(int module = 0; module < module_count; module++) {
         // Clear the input FIFO just in case
         pio_sm_clear_fifos(pio, SM_RX);
@@ -240,6 +240,7 @@ softreset:
         if(max_voltage > min_voltage + BALANCE_MIN) { // 15mV
           // Activate balancing
           balance_threshold = min_voltage + BALANCE_MIN; // 15mV
+          if(balance_threshold < 53738) balance_threshold = 53738;
           float v = balance_threshold * 5.0f / 65535.0f;
           printf("BALANCING: ACTIVE (%.4fV)\n", v);
         } else {
