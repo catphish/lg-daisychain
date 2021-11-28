@@ -4,8 +4,10 @@
 #include "bms.pio.h"
 #include <math.h>
 
-// Min voltage to enable balancing. 197 = 15mV
-#define BALANCE_MIN 197
+// Min difference to enable balancing. 197 = 15mV
+#define BALANCE_DIFF 197
+// Min absolute voltage to enable balancing. 53738 = 4.1V
+#define BALANCE_MIN 53738
 
 // Define pins for RS485 transceiver
 #define SERIAL_IN     28
@@ -236,11 +238,11 @@ softreset:
       //printf("Measurement complete in %i ms\n", (time_us_32() - previous_measurement)/1000);
 
       // Balancing
-      if(max_voltage > 53738) { // 4.1V
-        if(max_voltage > min_voltage + BALANCE_MIN) { // Min cell + 15mV
+      if(max_voltage > BALANCE_MIN) { // 4.1V
+        if(max_voltage > min_voltage + BALANCE_DIFF) { // Min cell + 15mV
           // At least one cell is above 4.1V, lets balance!
-          balance_threshold = min_voltage + BALANCE_MIN; // Min cell + 15mV
-          if(balance_threshold < 53738) balance_threshold = 53738; // No less than 4.1V
+          balance_threshold = min_voltage + BALANCE_DIFF; // Min cell + 15mV
+          if(balance_threshold < BALANCE_MIN) balance_threshold = BALANCE_MIN; // No less than 4.1V
           float v = balance_threshold * 5.0f / 65535.0f; // Convert to decimal for display
           printf("BALANCING: ACTIVE (%.4fV)\n", v);
         } else {
