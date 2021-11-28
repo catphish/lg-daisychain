@@ -237,11 +237,11 @@ softreset:
 
       // Balancing
       if(max_voltage > 53738) { // 4.1V
-        if(max_voltage > min_voltage + BALANCE_MIN) { // 15mV
+        if(max_voltage > min_voltage + BALANCE_MIN) { // Min cell + 15mV
           // At least one cell is above 4.1V, lets balance!
-          balance_threshold = min_voltage + BALANCE_MIN; // 15mV
+          balance_threshold = min_voltage + BALANCE_MIN; // Min cell + 15mV
           if(balance_threshold < 53738) balance_threshold = 53738; // No less than 4.1V
-          float v = balance_threshold * 5.0f / 65535.0f;
+          float v = balance_threshold * 5.0f / 65535.0f; // Convert to decimal for display
           printf("BALANCING: ACTIVE (%.4fV)\n", v);
         } else {
           // Cells are balanced
@@ -252,7 +252,7 @@ softreset:
         balance_threshold = 0;
         printf("BALANCING: INACTIVE\n");
       }
-      
+
       //printf("Balancing voltage: %f\n", balance_threshold * 5.0f / 65535.0f);
 
       // Loop through all modules again to process data
