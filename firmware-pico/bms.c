@@ -4,10 +4,10 @@
 #include "bms.pio.h"
 #include <math.h>
 
-// Min difference to enable balancing. 197 = 15mV
-#define BALANCE_DIFF 197
-// Min absolute voltage to enable balancing. 53738 = 4.1V
-#define BALANCE_MIN 53738
+// Min difference to enable balancing. 131 = 10mV
+#define BALANCE_DIFF 131
+// Min absolute voltage to enable balancing. 54525 = 4.16V
+#define BALANCE_MIN 54525
 
 // Define pins for RS485 transceiver
 #define SERIAL_IN     28
@@ -238,13 +238,13 @@ softreset:
       //printf("Measurement complete in %i ms\n", (time_us_32() - previous_measurement)/1000);
 
       // Balancing
-      if(max_voltage > BALANCE_MIN) { // 4.1V
-        if(max_voltage > min_voltage + BALANCE_DIFF) { // Min cell + 15mV
-          // At least one cell is above 4.1V, lets balance!
-          balance_threshold = min_voltage + BALANCE_DIFF; // Min cell + 15mV
-          if(balance_threshold < BALANCE_MIN) balance_threshold = BALANCE_MIN; // No less than 4.1V
+      if(max_voltage > BALANCE_MIN) { // 4.16V
+        if(max_voltage > min_voltage + BALANCE_DIFF) { // Min cell + 10mV
+          // At least one cell is above 4.16V, lets balance!
+          balance_threshold = min_voltage + BALANCE_DIFF; // Min cell + 10mV
+          if(balance_threshold < BALANCE_MIN) balance_threshold = BALANCE_MIN; // No less than 4.16V
           float v = balance_threshold * 5.0f / 65535.0f; // Convert to decimal for display
-          printf("BALANCING: ACTIVE (%.4fV)\n", v);
+          printf("BALANCING: ACTIVE %.3fV\n", v);
         } else {
           // Cells are balanced
           balance_threshold = 0;
@@ -262,17 +262,17 @@ softreset:
         // Send cell voltages
         for(int cell=0; cell<16; cell++) {
           float v = cell_voltage[module][cell] * 5.0f / 65535.0f;
-          printf("MODULE %2.2i CELL %2.2i: %.4fV\n", module, cell, v);
+          printf("%2.2i.%2.2i: %.3f\n", module, cell, v);
         }
 
-        //printf("MODULE %i AUX1 %.3fV\n", module, aux_voltage[module][0] * 5.0f / 65535.0f);
-        printf("MODULE %2.2i Temp N: %.2fC\n", module, temperature(aux_voltage[module][1]));
-        printf("MODULE %2.2i Temp P: %.2fC\n", module, temperature(aux_voltage[module][2]));
-        //printf("MODULE %i PCB Temp #1 %.3fV\n", module, aux_voltage[module][3] * 5.0f / 65535.0f);
-        //printf("MODULE %i PCB Temp #2 %.3fV\n", module, aux_voltage[module][4] * 5.0f / 65535.0f);
-        //printf("MODULE %i PCB Temp #3 %.3fV\n", module, aux_voltage[module][5] * 5.0f / 65535.0f);
-        //printf("MODULE %i PCB Temp #4 %.3fV\n", module, aux_voltage[module][6] * 5.0f / 65535.0f);
-        //printf("MODULE %i AUX8 %f\n", module, aux_voltage[module][7] * 5.0f / 65535.0f);
+        //printf("%i AUX1 %.3fV\n", module, aux_voltage[module][0] * 5.0f / 65535.0f);
+        printf("%2.2i.TempN: %.1fC\n", module, temperature(aux_voltage[module][1]));
+        printf("%2.2i.TempP: %.1fC\n", module, temperature(aux_voltage[module][2]));
+        //printf("%i PCB Temp #1 %.3fV\n", module, aux_voltage[module][3] * 5.0f / 65535.0f);
+        //printf("%i PCB Temp #2 %.3fV\n", module, aux_voltage[module][4] * 5.0f / 65535.0f);
+        //printf("%i PCB Temp #3 %.3fV\n", module, aux_voltage[module][5] * 5.0f / 65535.0f);
+        //printf("%i PCB Temp #4 %.3fV\n", module, aux_voltage[module][6] * 5.0f / 65535.0f);
+        //printf("%i AUX8 %f\n", module, aux_voltage[module][7] * 5.0f / 65535.0f);
       }
       //printf("Loop complete in %i ms\n", (time_us_32() - previous_measurement)/1000);
     }
