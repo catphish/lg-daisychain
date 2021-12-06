@@ -247,6 +247,7 @@ softreset:
           }
           send_command((uint8_t[]){ 0x92,module,0x14,balance_bitmap[module] >> 8, balance_bitmap[module] }, 5);
         } else {
+          printf("Communitcation error! Reset!\n");
           error_count++;
           goto softreset;
         }
