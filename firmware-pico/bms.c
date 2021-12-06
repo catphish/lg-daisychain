@@ -29,7 +29,6 @@ uint16_t max_voltage;
 uint16_t min_voltage;
 
 // Timer
-uint32_t previous_measurement = 0;
 uint32_t sleep_period; // Time until next loop execution
 uint8_t rewake;        // Whether the modules need to be woken up on next execution
 
@@ -185,119 +184,114 @@ int main()
   uint offset_sq = pio_add_program(pio, &square_wave_program);
 softreset:
   // Wake modules immediately
-  sleep_period = 0;
   rewake = 1;
-
   // Main loop.
   while (1) {
-    // Check is 1 second has elapsed since the last mesurement
-    if(time_us_32() - previous_measurement >= sleep_period) {
-      previous_measurement = time_us_32();
-      // If we've been sleeping, wake the modules
-      if(rewake) {
-        rewake = 0;
-        // Wake and reset up the modules
-        wakeup();
-        // Configure the module addresses
-        configure();
-      }
-
-      // Set discharge timeout (1s, all modules)
-      send_command((uint8_t[]){ 0xF1,0x13,(1<<4) | (1<<3) }, 3);
-      // Disable discharge (all modules)
-      send_command((uint8_t[]){ 0xF2,0x14,0,0 }, 4);
-      // Set communication timeout (10s) (all modules)
-      send_command((uint8_t[]){ 0xF1,0x28,(6<<4) }, 3);
-
-      // Send a broadcast message to all modules in chain to simultaneously sample all cells
-      sample_all();
-
-      // Collect voltages and set balancing on up to 16 modules
-      // We want to complete this loop as fast as possible because balancing must be disabled during measurement
-      max_voltage = 0;
-      min_voltage = 65535;
-      for(int module = 0; module < module_count; module++) {
-        // Clear the input FIFO just in case
-        pio_sm_clear_fifos(pio, SM_RX);
-        // Request sampled voltage data from module
-        send_command((uint8_t[]){0x81,module,0x02,0x20}, 4);
-        // Receive response data from PIO FIFO into CPU buffer - 51 bytes of data with 10ms timeout
-        // 24 values * 2 bytes + length + 2 byte checksum = 51
-        uint16_t received = receive_data(rx_data_buffer, 51, 10000);
-        // TODO: check RX CRC here
-        if(received == 51) {
-          balance_bitmap[module] = 0;
-          uint16_t max_v = 0;
-          for(int cell=0; cell<16; cell++) {
-            // nb. Cells are in reverse, cell 16 is reported first
-            cell_voltage[module][cell] = rx_data_buffer[(15-cell)*2+1] << 8 | rx_data_buffer[(15-cell)*2+2];
-            if(cell_voltage[module][cell] > max_voltage) max_voltage = cell_voltage[module][cell];
-            if(cell_voltage[module][cell] < min_voltage) min_voltage = cell_voltage[module][cell];
-            // Balancing
-            if(pcb_below_temp(module)) // Don't balance if PCB is hot
-              if(balance_threshold) // Don't balance unless threshold set
-                if(cell_voltage[module][cell] > balance_threshold) // Compare cell voltage to threshold
-                  if(cell_voltage[module][cell] > max_v) { // Only balance the highest voltage cell
-                    balance_bitmap[module] = (1 << cell); // Only ever balance one cell
-                    max_v = cell_voltage[module][cell];
-                  }
-          }
-          for(int aux=0; aux<8; aux++) {
-            aux_voltage[module][aux] = rx_data_buffer[(16+aux)*2+1] << 8 | rx_data_buffer[(16+aux)*2+2];
-          }
-          send_command((uint8_t[]){ 0x92,module,0x14,balance_bitmap[module] >> 8, balance_bitmap[module] }, 5);
-        } else {
-          printf("Communitcation error! Reset!\n");
-          error_count++;
-          goto softreset;
-        }
-      }
-      //printf("Measurement complete in %i ms\n", (time_us_32() - previous_measurement)/1000);
-
-      // Balancing
-      if(max_voltage > BALANCE_MIN) { // 4.16V
-        if(max_voltage > min_voltage + BALANCE_DIFF) { // Min cell + 10mV
-          // At least one cell is above 4.16V, lets balance!
-          balance_threshold = min_voltage + BALANCE_DIFF; // Min cell + 10mV
-          if(balance_threshold < BALANCE_MIN) balance_threshold = BALANCE_MIN; // No less than 4.16V
-          float v = balance_threshold * 5.0f / 65535.0f; // Convert to decimal for display
-          printf("BALANCING: ACTIVE %.3fV\n", v);
-          sleep_period = 900000;
-        } else {
-          // Cells are balanced
-          balance_threshold = 0;
-          printf("BALANCING: BALANCED\n");
-          sleep_period = 60000000;
-          sleep_modules();
-        }
-      } else {
-        balance_threshold = 0;
-        printf("BALANCING: INACTIVE\n");
-          sleep_period = 60000000;
-          sleep_modules();
-      }
-
-      //printf("Balancing voltage: %f\n", balance_threshold * 5.0f / 65535.0f);
-
-      // Loop through all modules again to process data
-      for(int module = 0; module < module_count; module++) {
-        // Send cell voltages
-        for(int cell=0; cell<16; cell++) {
-          float v = cell_voltage[module][cell] * 5.0f / 65535.0f;
-          printf("%2.2i.%2.2i: %.3f\n", module, cell, v);
-        }
-
-        //printf("%i AUX1 %.3fV\n", module, aux_voltage[module][0] * 5.0f / 65535.0f);
-        printf("%2.2i.TempN: %.1fC\n", module, temperature(aux_voltage[module][1]));
-        printf("%2.2i.TempP: %.1fC\n", module, temperature(aux_voltage[module][2]));
-        //printf("%i PCB Temp #1 %.3fV\n", module, aux_voltage[module][3] * 5.0f / 65535.0f);
-        //printf("%i PCB Temp #2 %.3fV\n", module, aux_voltage[module][4] * 5.0f / 65535.0f);
-        //printf("%i PCB Temp #3 %.3fV\n", module, aux_voltage[module][5] * 5.0f / 65535.0f);
-        //printf("%i PCB Temp #4 %.3fV\n", module, aux_voltage[module][6] * 5.0f / 65535.0f);
-        //printf("%i AUX8 %f\n", module, aux_voltage[module][7] * 5.0f / 65535.0f);
-        //printf("%2.2i.BAL: %04x\n", module, balance_bitmap[module]);
-      }
-      //printf("Loop complete in %i ms\n", (time_us_32() - previous_measurement)/1000);
+    // If we've been sleeping, wake the modules
+    if(rewake) {
+      rewake = 0;
+      // Wake and reset up the modules
+      wakeup();
+      // Configure the module addresses
+      configure();
     }
+
+    // Set discharge timeout (1s, all modules)
+    send_command((uint8_t[]){ 0xF1,0x13,(1<<4) | (1<<3) }, 3);
+    // Disable discharge (all modules)
+    send_command((uint8_t[]){ 0xF2,0x14,0,0 }, 4);
+    // Set communication timeout (10s) (all modules)
+    send_command((uint8_t[]){ 0xF1,0x28,(6<<4) }, 3);
+
+    // Send a broadcast message to all modules in chain to simultaneously sample all cells
+    sample_all();
+
+    // Collect voltages and set balancing on up to 16 modules
+    // We want to complete this loop as fast as possible because balancing must be disabled during measurement
+    max_voltage = 0;
+    min_voltage = 65535;
+    for(int module = 0; module < module_count; module++) {
+      // Clear the input FIFO just in case
+      pio_sm_clear_fifos(pio, SM_RX);
+      // Request sampled voltage data from module
+      send_command((uint8_t[]){0x81,module,0x02,0x20}, 4);
+      // Receive response data from PIO FIFO into CPU buffer - 51 bytes of data with 10ms timeout
+      // 24 values * 2 bytes + length + 2 byte checksum = 51
+      uint16_t received = receive_data(rx_data_buffer, 51, 10000);
+      // TODO: check RX CRC here
+      if(received == 51) {
+        balance_bitmap[module] = 0;
+        uint16_t max_v = 0;
+        for(int cell=0; cell<16; cell++) {
+          // nb. Cells are in reverse, cell 16 is reported first
+          cell_voltage[module][cell] = rx_data_buffer[(15-cell)*2+1] << 8 | rx_data_buffer[(15-cell)*2+2];
+          if(cell_voltage[module][cell] > max_voltage) max_voltage = cell_voltage[module][cell];
+          if(cell_voltage[module][cell] < min_voltage) min_voltage = cell_voltage[module][cell];
+          // Balancing
+          if(pcb_below_temp(module)) // Don't balance if PCB is hot
+            if(balance_threshold) // Don't balance unless threshold set
+              if(cell_voltage[module][cell] > balance_threshold) // Compare cell voltage to threshold
+                if(cell_voltage[module][cell] > max_v) { // Only balance the highest voltage cell
+                  balance_bitmap[module] = (1 << cell); // Only ever balance one cell
+                  max_v = cell_voltage[module][cell];
+                }
+        }
+        for(int aux=0; aux<8; aux++) {
+          aux_voltage[module][aux] = rx_data_buffer[(16+aux)*2+1] << 8 | rx_data_buffer[(16+aux)*2+2];
+        }
+        send_command((uint8_t[]){ 0x92,module,0x14,balance_bitmap[module] >> 8, balance_bitmap[module] }, 5);
+      } else {
+        printf("Communitcation error! Reset!\n");
+        error_count++;
+        goto softreset;
+      }
+    }
+    //printf("Measurement complete in %i ms\n", (time_us_32() - previous_measurement)/1000);
+
+    // Balancing
+    if(max_voltage > BALANCE_MIN) { // 4.16V
+      if(max_voltage > min_voltage + BALANCE_DIFF) { // Min cell + 10mV
+        // At least one cell is above 4.16V, lets balance!
+        balance_threshold = min_voltage + BALANCE_DIFF; // Min cell + 10mV
+        if(balance_threshold < BALANCE_MIN) balance_threshold = BALANCE_MIN; // No less than 4.16V
+        float v = balance_threshold * 5.0f / 65535.0f; // Convert to decimal for display
+        printf("BALANCING: ACTIVE %.3fV\n", v);
+        sleep_period = 800;
+      } else {
+        // Cells are balanced
+        balance_threshold = 0;
+        printf("BALANCING: BALANCED\n");
+        sleep_period = 60000;
+        sleep_modules();
+      }
+    } else {
+      balance_threshold = 0;
+      printf("BALANCING: INACTIVE\n");
+        sleep_period = 60000;
+        sleep_modules();
+    }
+
+    //printf("Balancing voltage: %f\n", balance_threshold * 5.0f / 65535.0f);
+
+    // Loop through all modules again to process data
+    for(int module = 0; module < module_count; module++) {
+      // Send cell voltages
+      for(int cell=0; cell<16; cell++) {
+        float v = cell_voltage[module][cell] * 5.0f / 65535.0f;
+        printf("%2.2i.%2.2i: %.3f\n", module, cell, v);
+      }
+
+      //printf("%i AUX1 %.3fV\n", module, aux_voltage[module][0] * 5.0f / 65535.0f);
+      printf("%2.2i.TempN: %.1fC\n", module, temperature(aux_voltage[module][1]));
+      printf("%2.2i.TempP: %.1fC\n", module, temperature(aux_voltage[module][2]));
+      //printf("%i PCB Temp #1 %.3fV\n", module, aux_voltage[module][3] * 5.0f / 65535.0f);
+      //printf("%i PCB Temp #2 %.3fV\n", module, aux_voltage[module][4] * 5.0f / 65535.0f);
+      //printf("%i PCB Temp #3 %.3fV\n", module, aux_voltage[module][5] * 5.0f / 65535.0f);
+      //printf("%i PCB Temp #4 %.3fV\n", module, aux_voltage[module][6] * 5.0f / 65535.0f);
+      //printf("%i AUX8 %f\n", module, aux_voltage[module][7] * 5.0f / 65535.0f);
+      //printf("%2.2i.BAL: %04x\n", module, balance_bitmap[module]);
+    }
+    //printf("Loop complete in %i ms\n", (time_us_32() - previous_measurement)/1000);
+    sleep_ms(sleep_period);
   }
 }
