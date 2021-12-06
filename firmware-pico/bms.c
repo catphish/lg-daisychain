@@ -6,8 +6,8 @@
 
 // Min difference to enable balancing. 131 = 10mV
 #define BALANCE_DIFF 131
-// Min absolute voltage to enable balancing. 54525 = 4.16V
-#define BALANCE_MIN 54525
+// Min absolute voltage to enable balancing. 52428 = 4.0V, 53738 = 4.1V, 54525 = 4.16V
+#define BALANCE_MIN 52428
 
 // Define pins for RS485 transceiver
 #define SERIAL_IN     28
@@ -27,6 +27,11 @@ uint16_t balance_bitmap[16];
 // Variables for balancing process
 uint16_t max_voltage;
 uint16_t min_voltage;
+
+// Timer
+uint32_t previous_measurement = 0;
+uint32_t sleep_period; // Time until next loop execution
+uint8_t rewake;        // Whether the modules need to be woken up on next execution
 
 // PIO and state machine selection
 PIO pio = pio0;
@@ -142,6 +147,12 @@ void sample_all() {
   busy_wait_ms(10);
 }
 
+// Put all modules to sleep
+void sleep_modules() {
+  send_command((uint8_t[]){0xF1,0x0C,0x48}, 3);
+  rewake = 1;
+}
+
 // Return 1 if all PCB temperature sensors on a module are above 1.0v
 uint8_t pcb_below_temp(uint8_t module) {
   if(aux_voltage[module][3] < 13107) return 0;
@@ -172,19 +183,24 @@ int main()
   daisychain_rx_program_init(pio, SM_RX, offset_rx, SERIAL_IN, SERIAL_MASTER);
   // Load and initialize 8MHz square wave generator
   uint offset_sq = pio_add_program(pio, &square_wave_program);
-
 softreset:
-  // Wake and reset up the modules
-  wakeup();
-  // Configure the module addresses
-  configure();
+  // Wake modules immediately
+  sleep_period = 0;
+  rewake = 1;
 
   // Main loop.
-  uint32_t previous_measurement = 0;
   while (1) {
     // Check is 1 second has elapsed since the last mesurement
-    if(time_us_32() - previous_measurement > 1000000) {
+    if(time_us_32() - previous_measurement >= sleep_period) {
       previous_measurement = time_us_32();
+      // If we've been sleeping, wake the modules
+      if(rewake) {
+        rewake = 0;
+        // Wake and reset up the modules
+        wakeup();
+        // Configure the module addresses
+        configure();
+      }
 
       // Set discharge timeout (1s, all modules)
       send_command((uint8_t[]){ 0xF1,0x13,(1<<4) | (1<<3) }, 3);
@@ -245,14 +261,19 @@ softreset:
           if(balance_threshold < BALANCE_MIN) balance_threshold = BALANCE_MIN; // No less than 4.16V
           float v = balance_threshold * 5.0f / 65535.0f; // Convert to decimal for display
           printf("BALANCING: ACTIVE %.3fV\n", v);
+          sleep_period = 900000;
         } else {
           // Cells are balanced
           balance_threshold = 0;
           printf("BALANCING: BALANCED\n");
+          sleep_period = 60000000;
+          sleep_modules();
         }
       } else {
         balance_threshold = 0;
         printf("BALANCING: INACTIVE\n");
+          sleep_period = 60000000;
+          sleep_modules();
       }
 
       //printf("Balancing voltage: %f\n", balance_threshold * 5.0f / 65535.0f);
@@ -273,6 +294,7 @@ softreset:
         //printf("%i PCB Temp #3 %.3fV\n", module, aux_voltage[module][5] * 5.0f / 65535.0f);
         //printf("%i PCB Temp #4 %.3fV\n", module, aux_voltage[module][6] * 5.0f / 65535.0f);
         //printf("%i AUX8 %f\n", module, aux_voltage[module][7] * 5.0f / 65535.0f);
+        //printf("%2.2i.BAL: %04x\n", module, balance_bitmap[module]);
       }
       //printf("Loop complete in %i ms\n", (time_us_32() - previous_measurement)/1000);
     }
