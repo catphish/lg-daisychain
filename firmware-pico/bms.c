@@ -7,7 +7,7 @@
 // Min difference to enable balancing. 131 = 10mV
 #define BALANCE_DIFF 131
 // Min absolute voltage to enable balancing. 52428 = 4.0V, 53738 = 4.1V, 54525 = 4.16V
-#define BALANCE_MIN 52428
+#define BALANCE_MIN 54525
 
 // Define pins for RS485 transceiver
 #define SERIAL_IN     28
@@ -278,7 +278,10 @@ softreset:
       // Send cell voltages
       for(int cell=0; cell<16; cell++) {
         float v = cell_voltage[module][cell] * 5.0f / 65535.0f;
-        printf("%2.2i.%2.2i: %.3f\n", module, cell, v);
+        if(balance_bitmap[module] & (1<<cell))
+          printf("%2.2i.%2.2i: %.3f *\n", module, cell, v);
+        else
+          printf("%2.2i.%2.2i: %.3f\n", module, cell, v);
       }
 
       //printf("%i AUX1 %.3fV\n", module, aux_voltage[module][0] * 5.0f / 65535.0f);
