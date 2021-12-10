@@ -40,8 +40,9 @@ uint16_t cell_voltage[16][16];
 uint16_t aux_voltage[16][8];
 uint16_t balance_bitmap[16];
 uint8_t balancing_mode;
-uint8_t can_address;
+uint16_t can_address;
 uint8_t sleep_mode;
+uint32_t pack_voltage;
 
 // Variables for balancing process
 uint16_t max_voltage;
@@ -156,7 +157,8 @@ uint8_t CAN_receive(uint8_t * can_rx_data) {
   return(length);
 }
 
-void CAN_transmit(uint16_t id, uint8_t* data, uint8_t length) {
+uint8_t CAN_transmit(uint16_t id, uint8_t* data, uint8_t length) {
+  uint8_t status = 0;
   CAN_reg_write(REG_TXBnSIDH(0), id >> 3); // Set CAN ID
   CAN_reg_write(REG_TXBnSIDL(0), id << 5); // Set CAN ID
   CAN_reg_write(REG_TXBnEID8(0), 0x00);    // Extended ID
@@ -172,12 +174,15 @@ void CAN_transmit(uint16_t id, uint8_t* data, uint8_t length) {
 
   // Wait for sending to complete
   while (CAN_reg_read(REG_TXBnCTRL(0)) & 0x08) {
-    if(CAN_reg_read(REG_TXBnCTRL(0)) & 0x10)
+    if(CAN_reg_read(REG_TXBnCTRL(0)) & 0x10) {
       CAN_reg_modify(REG_CANCTRL, 0x10, 0x10);      // Abort transmission
+      status = 1;
+    }
   }
   CAN_reg_modify(REG_CANCTRL, 0x10, 0x00);          // Clear abort flag
   CAN_reg_modify(REG_CANINTF, FLAG_TXnIF(0), 0x00); // Clear interrupt flag
   busy_wait_us(1000); // Give the receiver a little time to process frames
+  return status;
 }
 
 // Calculate message CRC.
@@ -351,6 +356,8 @@ softreset:
     can_address = 0x4f0 + !gpio_get(CONF1);
     // Set balancing mode based on CONF2 input
     balancing_mode = !gpio_get(CONF2);
+    // Start counter for total voltage
+    pack_voltage = 0;
 
     // If we've been sleeping, wake the modules
     if(rewake) {
@@ -390,6 +397,7 @@ softreset:
         for(int cell=0; cell<16; cell++) {
           // nb. Cells are in reverse, cell 16 is reported first
           cell_voltage[module][cell] = rx_data_buffer[(15-cell)*2+1] << 8 | rx_data_buffer[(15-cell)*2+2];
+          pack_voltage += cell_voltage[module][cell];
           if(cell_voltage[module][cell] > max_voltage) max_voltage = cell_voltage[module][cell];
           if(cell_voltage[module][cell] < min_voltage) min_voltage = cell_voltage[module][cell];
           // Balancing
@@ -411,8 +419,6 @@ softreset:
         goto softreset;
       }
     }
-    // Send general status information to CAN
-    CAN_transmit(can_address, (uint8_t[]){ 0xff, 0xff, module_count, error_count }, 4);
 
     if(balancing_mode) {
       // CONF2 is set, enable standalone balancing
@@ -441,9 +447,13 @@ softreset:
       // CONF2 is not set, await balancing instructions from CAN
       // CAN mode will drain both the HV and LV batteries as it will poll every
       // second regardless of balancing state and never shuts down the modules.
-      balance_threshold = 0;
       sleep_period = 900;
+
+      float v = balance_threshold * 5.0f / 65535.0f; // Convert to decimal for display
+      printf("BALANCING: CAN CONTROLLED %.3fV\n", v);
+      balance_threshold = 0;
     }
+    printf("PACK: %.3f\n", pack_voltage);
 
     // Loop through all modules again to process data
     for(int module = 0; module < module_count; module++) {
@@ -460,6 +470,9 @@ softreset:
       printf("%2.2i.TempP: %.1fC\n", module, temperature(aux_voltage[module][2]));
     }
 
+    // Send general status information to CAN
+    CAN_transmit(can_address, (uint8_t[]){ 0xff, 0xff, module_count, error_count }, 4);
+    CAN_transmit(can_address, (uint8_t[]){ 0xff, 0xfe, pack_voltage>>24, pack_voltage>>16, pack_voltage>>8, pack_voltage}, 4);
     // Loop through all modules again to send data to CAN
     for(int module = 0; module < module_count; module++) {
       // Transmit balancing bitmap by CAN
@@ -480,7 +493,7 @@ softreset:
     } else {
       uint32_t t0 = time_us_32();
       // Sleep for 900ms or forever if sleep_mode is set
-      while(sleep_mode || (time_us_32() - t0 < 900000)) {
+      while(sleep_mode || (time_us_32() - t0 < (sleep_period * 1000))) {
         if(CAN_receive(can_data_buffer)) {
           // Set balance target
           if(can_data_buffer[0] == 0) balance_threshold = (can_data_buffer[1] << 8) | can_data_buffer[2];
