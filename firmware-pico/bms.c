@@ -1,28 +1,47 @@
 #include <stdio.h>
 #include "pico/stdlib.h"
 #include "hardware/pio.h"
+#include "hardware/spi.h"
 #include "bms.pio.h"
+#include "can.h"
 #include <math.h>
 
 // Min difference to enable balancing. 131 = 10mV
 #define BALANCE_DIFF 131
 // Min absolute voltage to enable balancing. 52428 = 4.0V, 53738 = 4.1V, 54525 = 4.16V
-#define BALANCE_MIN 54525
+#define BALANCE_MIN 52428
+
+// Define pins for SPI (to CAN)
+#define SPI_PORT spi0
+#define SPI_MISO 16
+#define SPI_CS   17
+#define SPI_CLK  18
+#define SPI_MOSI 19
+#define CAN_CLK  21 // 8MHz clock for CAN
+
+// Define config pins
+#define CONF1 5
+#define CONF2 9
 
 // Define pins for RS485 transceiver
 #define SERIAL_IN     28
 #define SERIAL_MASTER 27
 #define SERIAL_OUT    26
 
-// Buffer for received data
+// Buffers for received data
 uint8_t rx_data_buffer[128];
+uint8_t can_data_buffer[16];
 
+// Other global variables
 uint8_t module_count = 0;
 uint8_t error_count = 0;
 uint16_t balance_threshold = 0;
 uint16_t cell_voltage[16][16];
 uint16_t aux_voltage[16][8];
 uint16_t balance_bitmap[16];
+uint8_t balancing_mode;
+uint8_t can_address;
+uint8_t sleep_mode;
 
 // Variables for balancing process
 uint16_t max_voltage;
@@ -37,6 +56,129 @@ PIO pio = pio0;
 #define SM_TX 0
 #define SM_RX 1
 #define SM_SQ 2
+
+void SPI_configure() {
+  spi_init(SPI_PORT, 1000000);
+  spi_set_format(SPI_PORT, 8, 0,0,SPI_MSB_FIRST);
+  gpio_set_function(SPI_MISO, GPIO_FUNC_SPI);
+  gpio_set_function(SPI_MOSI, GPIO_FUNC_SPI);
+  gpio_set_function(SPI_CLK, GPIO_FUNC_SPI);
+  gpio_init(SPI_CS);
+  gpio_set_dir(SPI_CS, GPIO_OUT);
+  gpio_put(SPI_CS, 1);
+}
+
+void CAN_reset() {
+  gpio_put(SPI_CS, 0);
+  spi_write_blocking(SPI_PORT, (uint8_t[]){CMD_RESET},1);
+  gpio_put(SPI_CS, 1);
+  busy_wait_us(100);
+}
+
+uint8_t CAN_reg_read(uint8_t reg) {
+  uint8_t data;
+  gpio_put(SPI_CS, 0);
+  spi_write_blocking(SPI_PORT, (uint8_t[]){CMD_READ, reg}, 2);
+  spi_read_blocking(SPI_PORT, 0, &data, 1);
+  gpio_put(SPI_CS, 1);
+  return(data);
+}
+
+void CAN_reg_write(uint8_t reg, uint8_t val) {
+  gpio_put(SPI_CS, 0);
+  spi_write_blocking(SPI_PORT, (uint8_t[]){CMD_WRITE, reg, val}, 3);
+  gpio_put(SPI_CS, 1);
+}
+
+void CAN_reg_modify(uint8_t reg, uint8_t mask, uint8_t val) {
+  gpio_put(SPI_CS, 0);
+  busy_wait_us(2);
+  spi_write_blocking(SPI_PORT, (uint8_t[]){CMD_MODIFY, reg, mask, val}, 4);
+  busy_wait_us(2);
+  gpio_put(SPI_CS, 1);
+}
+
+void CAN_configure(uint16_t id) {
+  // Configure speed to 500kbps based on 8MHz Crystal
+  // Magic constants from https://github.com/sandeepmistry/arduino-CAN/blob/master/src/MCP2515.cpp
+  CAN_reg_write(REG_CNF1, 0x00);
+  CAN_reg_write(REG_CNF2, 0x90);
+  CAN_reg_write(REG_CNF3, 0x02);
+
+  // Enable Filters
+  CAN_reg_write(REG_RXBnCTRL(0), 1<<2); // Enable rollover from BUF0 to BUF1
+  CAN_reg_write(REG_RXBnCTRL(1), 0);
+  // Set masks for RXB0 and RXB1 the same
+  for(int n=0; n<2; n++) {
+    uint16_t mask = 0x7ff;
+    CAN_reg_write(REG_RXMnSIDH(n), mask >> 3);
+    CAN_reg_write(REG_RXMnSIDL(n), mask << 5);
+    CAN_reg_write(REG_RXMnEID8(n), 0);
+    CAN_reg_write(REG_RXMnEID0(n), 0);
+  }
+  // Set match ID for all filters the same
+  for(int n=0; n<6; n++) {
+    CAN_reg_write(REG_RXFnSIDH(n), id >> 3);
+    CAN_reg_write(REG_RXFnSIDL(n), id << 5);
+    CAN_reg_write(REG_RXFnEID8(n), 0);
+    CAN_reg_write(REG_RXFnEID0(n), 0);
+  }
+
+  // Set normal operation mode
+  CAN_reg_write(REG_CANCTRL, MODE_NORMAL);
+}
+
+uint8_t CAN_receive(uint8_t * can_rx_data) {
+  uint8_t intf = CAN_reg_read(REG_CANINTF);
+  uint8_t rtr;
+  uint8_t n; // One of two receive buffers
+  if(intf & FLAG_RXnIF(0)) {
+    n = 0;
+  } else if (intf & FLAG_RXnIF(1)) {
+    n = 1;
+  } else {
+    return 0;
+  }
+  rtr = (CAN_reg_read(REG_RXBnSIDL(n)) & FLAG_SRR) ? true : false;
+  uint8_t dlc = CAN_reg_read(REG_RXBnDLC(n)) & 0x0f;
+
+  uint8_t length;
+  if (rtr) {
+    length = 0;
+  } else {
+    length = dlc;
+
+    for (int i = 0; i < length; i++)
+      can_rx_data[i] = CAN_reg_read(REG_RXBnD0(n) + i);
+  }
+
+  CAN_reg_modify(REG_CANINTF, FLAG_RXnIF(n), 0x00);
+  return(length);
+}
+
+void CAN_transmit(uint16_t id, uint8_t* data, uint8_t length) {
+  CAN_reg_write(REG_TXBnSIDH(0), id >> 3); // Set CAN ID
+  CAN_reg_write(REG_TXBnSIDL(0), id << 5); // Set CAN ID
+  CAN_reg_write(REG_TXBnEID8(0), 0x00);    // Extended ID
+  CAN_reg_write(REG_TXBnEID0(0), 0x00);    // Extended ID
+
+  CAN_reg_write(REG_TXBnDLC(0), length);   // Frame length
+
+  for (int i = 0; i < length; i++) {       // Write the frame data
+    CAN_reg_write(REG_TXBnD0(0) + i, data[i]);
+  }
+
+  CAN_reg_write(REG_TXBnCTRL(0), 0x08);    // Start sending
+
+  // Wait for sending to complete
+  while (CAN_reg_read(REG_TXBnCTRL(0)) & 0x08) {
+    if(CAN_reg_read(REG_TXBnCTRL(0)) & 0x10)
+      CAN_reg_modify(REG_CANCTRL, 0x10, 0x10);      // Abort transmission
+  }
+  CAN_reg_modify(REG_CANCTRL, 0x10, 0x00);          // Clear abort flag
+  CAN_reg_modify(REG_CANINTF, FLAG_TXnIF(0), 0x00); // Clear interrupt flag
+  busy_wait_us(1000); // Give the receiver a little time to process frames
+}
 
 // Calculate message CRC.
 uint16_t crc16(uint8_t * message, uint8_t length) {
@@ -182,11 +324,34 @@ int main()
   daisychain_rx_program_init(pio, SM_RX, offset_rx, SERIAL_IN, SERIAL_MASTER);
   // Load and initialize 8MHz square wave generator
   uint offset_sq = pio_add_program(pio, &square_wave_program);
+  square_wave_program_init(pio, SM_SQ, offset_sq, CAN_CLK);
+
+  // Configure config pins CONF1 and CONF2 as inputs with pull-up
+  gpio_init(CONF1);
+  gpio_set_dir(CONF1, GPIO_IN);
+  gpio_pull_up(CONF1);
+  gpio_init(CONF2);
+  gpio_set_dir(CONF2, GPIO_IN);
+  gpio_pull_up(CONF2);
+
+  // Configure SPI to communicate with CAN
+  SPI_configure();
+  // Set up CAN to receive messages
+  CAN_reset();
+  CAN_configure(0x4F8);
+
 softreset:
+  // By default don't enter indefinite sleep
+  sleep_mode = 0;
   // Wake modules immediately
   rewake = 1;
   // Main loop.
   while (1) {
+    // Set CAN address based on CONF1 input
+    can_address = 0x4f0 + !gpio_get(CONF1);
+    // Set balancing mode based on CONF2 input
+    balancing_mode = !gpio_get(CONF2);
+
     // If we've been sleeping, wake the modules
     if(rewake) {
       rewake = 0;
@@ -246,32 +411,39 @@ softreset:
         goto softreset;
       }
     }
-    //printf("Measurement complete in %i ms\n", (time_us_32() - previous_measurement)/1000);
+    // Send general status information to CAN
+    CAN_transmit(can_address, (uint8_t[]){ 0xff, 0xff, module_count, error_count }, 4);
 
-    // Balancing
-    if(max_voltage > BALANCE_MIN) { // 4.16V
-      if(max_voltage > min_voltage + BALANCE_DIFF) { // Min cell + 10mV
-        // At least one cell is above 4.16V, lets balance!
-        balance_threshold = min_voltage + BALANCE_DIFF; // Min cell + 10mV
-        if(balance_threshold < BALANCE_MIN) balance_threshold = BALANCE_MIN; // No less than 4.16V
-        float v = balance_threshold * 5.0f / 65535.0f; // Convert to decimal for display
-        printf("BALANCING: ACTIVE %.3fV\n", v);
-        sleep_period = 800;
+    if(balancing_mode) {
+      // CONF2 is set, enable standalone balancing
+      if(max_voltage > BALANCE_MIN) { // 4.16V
+        if(max_voltage > min_voltage + BALANCE_DIFF) { // Min cell + 10mV
+          // At least one cell is above 4.16V, lets balance!
+          balance_threshold = min_voltage + BALANCE_DIFF; // Min cell + 10mV
+          if(balance_threshold < BALANCE_MIN) balance_threshold = BALANCE_MIN; // No less than 4.16V
+          float v = balance_threshold * 5.0f / 65535.0f; // Convert to decimal for display
+          printf("BALANCING: ACTIVE %.3fV\n", v);
+          sleep_period = 900;
+        } else {
+          // Cells are balanced
+          balance_threshold = 0;
+          printf("BALANCING: BALANCED\n");
+          sleep_period = 60000;
+          sleep_modules();
+        }
       } else {
-        // Cells are balanced
         balance_threshold = 0;
-        printf("BALANCING: BALANCED\n");
-        sleep_period = 60000;
-        sleep_modules();
+        printf("BALANCING: INACTIVE\n");
+          sleep_period = 60000;
+          sleep_modules();
       }
     } else {
+      // CONF2 is not set, await balancing instructions from CAN
+      // CAN mode will drain both the HV and LV batteries as it will poll every
+      // second regardless of balancing state and never shuts down the modules.
       balance_threshold = 0;
-      printf("BALANCING: INACTIVE\n");
-        sleep_period = 60000;
-        sleep_modules();
+      sleep_period = 900;
     }
-
-    //printf("Balancing voltage: %f\n", balance_threshold * 5.0f / 65535.0f);
 
     // Loop through all modules again to process data
     for(int module = 0; module < module_count; module++) {
@@ -284,17 +456,45 @@ softreset:
           printf("%2.2i.%2.2i: %.3f\n", module, cell, v);
       }
 
-      //printf("%i AUX1 %.3fV\n", module, aux_voltage[module][0] * 5.0f / 65535.0f);
       printf("%2.2i.TempN: %.1fC\n", module, temperature(aux_voltage[module][1]));
       printf("%2.2i.TempP: %.1fC\n", module, temperature(aux_voltage[module][2]));
-      //printf("%i PCB Temp #1 %.3fV\n", module, aux_voltage[module][3] * 5.0f / 65535.0f);
-      //printf("%i PCB Temp #2 %.3fV\n", module, aux_voltage[module][4] * 5.0f / 65535.0f);
-      //printf("%i PCB Temp #3 %.3fV\n", module, aux_voltage[module][5] * 5.0f / 65535.0f);
-      //printf("%i PCB Temp #4 %.3fV\n", module, aux_voltage[module][6] * 5.0f / 65535.0f);
-      //printf("%i AUX8 %f\n", module, aux_voltage[module][7] * 5.0f / 65535.0f);
-      //printf("%2.2i.BAL: %04x\n", module, balance_bitmap[module]);
     }
-    //printf("Loop complete in %i ms\n", (time_us_32() - previous_measurement)/1000);
-    sleep_ms(sleep_period);
+
+    // Loop through all modules again to send data to CAN
+    for(int module = 0; module < module_count; module++) {
+      // Transmit balancing bitmap by CAN
+      CAN_transmit(can_address, (uint8_t[]){ module, 0xff, balance_bitmap[module] >> 8, balance_bitmap[module] }, 4);
+
+      // Transmit cell voltages by CAN
+      for(int cell=0; cell<16; cell++)
+        CAN_transmit(can_address, (uint8_t[]){ module, cell, cell_voltage[module][cell] >> 8, cell_voltage[module][cell] }, 4);
+
+      // Transmit AUX inputs (temp sensors) by CAN
+      for(int aux=0; aux<8; aux++)
+        CAN_transmit(can_address, (uint8_t[]){ module, 16 + aux, aux_voltage[module][aux] >> 8, aux_voltage[module][aux] }, 4);
+    }
+
+    // Low power sleep
+    if(balancing_mode) {
+      sleep_ms(sleep_period);
+    } else {
+      uint32_t t0 = time_us_32();
+      // Sleep for 900ms or forever if sleep_mode is set
+      while(sleep_mode || (time_us_32() - t0 < 900000)) {
+        if(CAN_receive(can_data_buffer)) {
+          // Set balance target
+          if(can_data_buffer[0] == 0) balance_threshold = (can_data_buffer[1] << 8) | can_data_buffer[2];
+          // Reset and wake modules
+          if(can_data_buffer[0] == 1) goto softreset;
+          // Sleep all modules and wait for reset
+          if(can_data_buffer[0] == 2) {
+            sleep_modules();
+            sleep_mode = 1;
+          }
+        }
+        // Wake MCU to check CAN messages every 2ms
+        sleep_ms(2);
+      }
+    }
   }
 }
