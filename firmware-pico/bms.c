@@ -355,7 +355,7 @@ softreset:
     // Set CAN address based on CONF1 input
     can_address = 0x4f0 + !gpio_get(CONF1);
     // Set balancing mode based on CONF2 input
-    balancing_mode = !gpio_get(CONF2);
+    balancing_mode = gpio_get(CONF2);
     // Start counter for total voltage
     pack_voltage = 0;
 
@@ -453,7 +453,8 @@ softreset:
       printf("BALANCING: CAN CONTROLLED %.3fV\n", v);
       balance_threshold = 0;
     }
-    printf("PACK: %.3f\n", pack_voltage);
+    float v = pack_voltage * 5.0f / 65535.0f; // Convert to decimal for display
+    printf("PACK: %.2f\n", v);
 
     // Loop through all modules again to process data
     for(int module = 0; module < module_count; module++) {
