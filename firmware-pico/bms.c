@@ -345,6 +345,9 @@ int main()
   CAN_reset();
   CAN_configure(0x4F8);
 
+  // Wait a little at startup
+  sleep_ms(2000);
+
 softreset:
   // By default don't enter indefinite sleep
   sleep_mode = 0;
@@ -420,6 +423,11 @@ softreset:
       }
     }
 
+    float v = pack_voltage * 5.0f / 65535.0f; // Convert to decimal for display
+    float vmin = min_voltage * 5.0f / 65535.0f; // Convert to decimal for display
+    float vmax = max_voltage * 5.0f / 65535.0f; // Convert to decimal for display
+    printf("PACK: %.2f | MIN: %.3f | MAX: %.3f | ", v, vmin, vmax);
+
     if(balancing_mode) {
       // CONF2 is set, enable standalone balancing
       if(max_voltage > BALANCE_MIN) { // 4.16V
@@ -433,13 +441,13 @@ softreset:
         } else {
           // Cells are balanced
           balance_threshold = 0;
-          printf("BALANCING: BALANCED\n");
+          printf("BAL: BALANCED\n");
           sleep_period = 60000;
           sleep_modules();
         }
       } else {
         balance_threshold = 0;
-        printf("BALANCING: INACTIVE\n");
+        printf("BAL: INACTIVE\n");
           sleep_period = 60000;
           sleep_modules();
       }
@@ -450,25 +458,23 @@ softreset:
       sleep_period = 900;
 
       float v = balance_threshold * 5.0f / 65535.0f; // Convert to decimal for display
-      printf("BALANCING: CAN CONTROLLED %.3fV\n", v);
+      printf("BAL: CAN %.3fV\n", v);
       balance_threshold = 0;
     }
-    float v = pack_voltage * 5.0f / 65535.0f; // Convert to decimal for display
-    printf("PACK: %.2f\n", v);
 
     // Loop through all modules again to process data
     for(int module = 0; module < module_count; module++) {
       // Send cell voltages
+      printf("M%2.2i ", module);
       for(int cell=0; cell<16; cell++) {
         float v = cell_voltage[module][cell] * 5.0f / 65535.0f;
         if(balance_bitmap[module] & (1<<cell))
-          printf("%2.2i.%2.2i: %.3f *\n", module, cell, v);
+          printf("%.3f* ", v);
         else
-          printf("%2.2i.%2.2i: %.3f\n", module, cell, v);
+          printf("%.3f  ", v);
+        if(cell == 7) printf("%.1fC\n    ", temperature(aux_voltage[module][1]));
       }
-
-      printf("%2.2i.TempN: %.1fC\n", module, temperature(aux_voltage[module][1]));
-      printf("%2.2i.TempP: %.1fC\n", module, temperature(aux_voltage[module][2]));
+      printf("%.1fC\n", temperature(aux_voltage[module][2]));
     }
 
     // Send general status information to CAN
