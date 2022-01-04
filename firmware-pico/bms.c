@@ -157,8 +157,7 @@ uint8_t CAN_receive(uint8_t * can_rx_data) {
   return(length);
 }
 
-uint8_t CAN_transmit(uint16_t id, uint8_t* data, uint8_t length) {
-  uint8_t status = 0;
+void CAN_transmit(uint16_t id, uint8_t* data, uint8_t length) {
   CAN_reg_write(REG_TXBnSIDH(0), id >> 3); // Set CAN ID
   CAN_reg_write(REG_TXBnSIDL(0), id << 5); // Set CAN ID
   CAN_reg_write(REG_TXBnEID8(0), 0x00);    // Extended ID
@@ -171,18 +170,9 @@ uint8_t CAN_transmit(uint16_t id, uint8_t* data, uint8_t length) {
   }
 
   CAN_reg_write(REG_TXBnCTRL(0), 0x08);    // Start sending
-
-  // Wait for sending to complete
-  while (CAN_reg_read(REG_TXBnCTRL(0)) & 0x08) {
-    if(CAN_reg_read(REG_TXBnCTRL(0)) & 0x10) {
-      CAN_reg_modify(REG_CANCTRL, 0x10, 0x10);      // Abort transmission
-      status = 1;
-    }
-  }
-  CAN_reg_modify(REG_CANCTRL, 0x10, 0x00);          // Clear abort flag
+  busy_wait_us(1000); // Allow up to 1ms to transmit
+  CAN_reg_write(REG_TXBnCTRL(0), 0);    // Stop sending
   CAN_reg_modify(REG_CANINTF, FLAG_TXnIF(0), 0x00); // Clear interrupt flag
-  busy_wait_us(1000); // Give the receiver a little time to process frames
-  return status;
 }
 
 // Calculate message CRC.
