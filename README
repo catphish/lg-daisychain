@@ -17,7 +17,7 @@ Standlone Balancing
 With jumper CONF2 open, the module will operate in standalone balancing mode. It will regularly monitor the
 voltage of all attached cells, and will bleed any cell that meets BOTH of the following conditions.
 
-* Voltage exceeds 4.0V
+* Voltage exceeds 4.12V
 * Voltage is more than 10mV higher than the voltage of the lowest cell in the pack
 
 For thermal safety, only one cell (wit the highest voltage) per battery will be discharged at a time.

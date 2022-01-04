@@ -8,7 +8,7 @@
 
 // Min difference to enable balancing. 131 = 10mV
 #define BALANCE_DIFF 131
-// Min absolute voltage to enable balancing. 52428 = 4.0V, 53738 = 4.1V, 54525 = 4.16V
+// Min absolute voltage to enable balancing. 54001 = 4.12V
 #define BALANCE_MIN 54001
 
 // Define pins for SPI (to CAN)
