@@ -68,8 +68,7 @@ CAN_TERM - This jumper should be connected if this board is the final device in 
            are connecting direcly to one other device such as an Arduino. This will connect a 120 Ohm resistor
            between CANL and CANH.
 
-CONF1    - If you intend to use two of these devices on the CAN bus, connect this jumper on the second device.
-           This will change the CAN ID to avoid conflicts.
+CONF1    - This jumper is ignored in this version.
 
 CONF2    - CAN controlled balancing. Close this jumper to disable the default policy of 4.0V and 10mV and instead
            allow balancing to be controlled via CAN bus.
@@ -79,58 +78,17 @@ CAN Messages Transmitted
 
 The adapter will transmit CAN messages in the following format:
 
-ID      : 0x4f0 (0x4f1 if Jumper CONF1 is connected)
-Byte 0  : Module ID (0-15)
-Byte 1  : Cell ID (Measurements 0-15 of each module are cell voltages)
-Byte 2-3: Cell voltage where 0x0000 is 0.0v and 0xffff is 5.0v. Big endian.
+ID      : 0x4f1
+Byte 0-1: Max cell voltage where 0x0000 is 0.0v and 0xffff is 5.0v. Big endian.
 
-ID      : 0x4f0 (0x4f1 if Jumper CONF1 is connected)
-Byte 0  : Module ID (0-15)
-Byte 1  : Temperature sensor ID (Measurements 16-23 of each module are temperatures)
-Byte 2-3: Outer temperature of battery module. Big endian. See table below for details.
+ID      : 0x4f2
+Byte 0-1: Min cell voltage where 0x0000 is 0.0v and 0xffff is 5.0v. Big endian.
 
-ID      : 0x4f0 (0x4f1 if Jumper CONF1 is connected)
-Byte 0  : Module ID (0-15)
-Byte 1  : 0xff
-Byte 2-3: Balancing bitmap. Identifies which cells are currently being dissharged. LSB is cell 0.
+ID      : 0x4f3
+Byte 0-1: Max cell temperature where 0 is -100C and 2000 is +100C. Big endian.
 
-ID      : 0x4f0 (0x4f1 if Jumper CONF1 is connected)
-Byte 0  : 0xff (Module 0xff is the adapter itself)
-Byte 1  : 0xfe (Measurement ID 0xfe is pack voltage)
-Byte 2-5: Pack voltage where 0x0000 is 0.0v and 0xffff is 5.0v. Big endian.
-
-ID      : 0x4f0 (0x4f1 if Jumper CONF1 is connected)
-Byte 0  : 0xff (Module 0xff is the adapter itself)
-Byte 1  : 0xff (Measurement ID 0xff is status)
-Byte 2  : Number of modules detected
-Byte 3  : Communication error counter. If a module fails to respond, this counter is incremented and the whole chain is reset.
-
-Additional sensors
-==================
-
-ID      Info
---      ----
-16      AUX7 - Unknown - probably internal battery temperature sensor. Scale unknown.
-17      External NTC - negative side.
-18      External NTC - positive side.
-19      PCB Temerature. Scale unknown but values above 1v (13107) are safe. Balancing is disabled by the adapter below this value.
-20      PCB Temerature. Scale unknown but values above 1v (13107) are safe. Balancing is disabled by the adapter below this value.
-21      PCB Temerature. Scale unknown but values above 1v (13107) are safe. Balancing is disabled by the adapter below this value.
-22      PCB Temerature. Scale unknown but values above 1v (13107) are safe. Balancing is disabled by the adapter below this value.
-23      AUX0 - probably unused. Reads close to 0v
-
-External NTC sesors
-===================
-
-The following calculation can be used to convert the readong for an External NTC to a temperature:
-
-float temperature(uint16_t adc) {
-  float r = 0.0000000347363427499292f * adc * adc - 0.001025770762903f * adc + 2.68235340614337f;
-  float t = log(r) * -30.5280964239816f + 95.6841501312447f;
-  return t;
-}
-
-This code will not work for the PCB temperature sensors and will probably not work for AUX7.
+ID      : 0x4f4
+Byte 0-1: Min cell temperature where 0 is -100C and 2000 is +100C. Big endian.
 
 CAN Messages Received
 =====================

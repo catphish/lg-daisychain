@@ -9,7 +9,7 @@
 // Min difference to enable balancing. 131 = 10mV
 #define BALANCE_DIFF 131
 // Min absolute voltage to enable balancing. 52428 = 4.0V, 53738 = 4.1V, 54525 = 4.16V
-#define BALANCE_MIN 52428
+#define BALANCE_MIN 54001
 
 // Define pins for SPI (to CAN)
 #define SPI_PORT spi0
@@ -40,13 +40,14 @@ uint16_t cell_voltage[16][16];
 uint16_t aux_voltage[16][8];
 uint16_t balance_bitmap[16];
 uint8_t balancing_mode;
-uint16_t can_address;
 uint8_t sleep_mode;
 uint32_t pack_voltage;
 
 // Variables for balancing process
 uint16_t max_voltage;
 uint16_t min_voltage;
+uint16_t max_temperature;
+uint16_t min_temperature;
 
 // Timer
 uint32_t sleep_period; // Time until next loop execution
@@ -345,8 +346,6 @@ softreset:
   rewake = 1;
   // Main loop.
   while (1) {
-    // Set CAN address based on CONF1 input
-    can_address = 0x4f0 + !gpio_get(CONF1);
     // Set balancing mode based on CONF2 input
     balancing_mode = gpio_get(CONF2);
     // Start counter for total voltage
@@ -375,6 +374,8 @@ softreset:
     // We want to complete this loop as fast as possible because balancing must be disabled during measurement
     max_voltage = 0;
     min_voltage = 65535;
+    max_temperature = 0;
+    min_temperature = 65535;
     for(int module = 0; module < module_count; module++) {
       // Clear the input FIFO just in case
       pio_sm_clear_fifos(pio, SM_RX);
@@ -404,6 +405,10 @@ softreset:
         }
         for(int aux=0; aux<8; aux++) {
           aux_voltage[module][aux] = rx_data_buffer[(16+aux)*2+1] << 8 | rx_data_buffer[(16+aux)*2+2];
+        }
+        for(int aux=1; aux<3; aux++) {
+          if(aux_voltage[module][aux] > max_temperature) max_temperature = aux_voltage[module][aux];
+          if(aux_voltage[module][aux] < min_temperature) min_temperature = aux_voltage[module][aux];
         }
         send_command((uint8_t[]){ 0x92,module,0x14,balance_bitmap[module] >> 8, balance_bitmap[module] }, 5);
       } else {
@@ -468,21 +473,12 @@ softreset:
     }
 
     // Send general status information to CAN
-    CAN_transmit(can_address, (uint8_t[]){ 0xff, 0xff, module_count, error_count }, 4);
-    CAN_transmit(can_address, (uint8_t[]){ 0xff, 0xfe, pack_voltage>>24, pack_voltage>>16, pack_voltage>>8, pack_voltage}, 4);
-    // Loop through all modules again to send data to CAN
-    for(int module = 0; module < module_count; module++) {
-      // Transmit balancing bitmap by CAN
-      CAN_transmit(can_address, (uint8_t[]){ module, 0xff, balance_bitmap[module] >> 8, balance_bitmap[module] }, 4);
-
-      // Transmit cell voltages by CAN
-      for(int cell=0; cell<16; cell++)
-        CAN_transmit(can_address, (uint8_t[]){ module, cell, cell_voltage[module][cell] >> 8, cell_voltage[module][cell] }, 4);
-
-      // Transmit AUX inputs (temp sensors) by CAN
-      for(int aux=0; aux<8; aux++)
-        CAN_transmit(can_address, (uint8_t[]){ module, 16 + aux, aux_voltage[module][aux] >> 8, aux_voltage[module][aux] }, 4);
-    }
+    uint16_t tmax = temperature(max_temperature) * 10.0f + 1000.0f;
+    uint16_t tmin = temperature(max_temperature) * 10.0f + 1000.0f;
+    CAN_transmit(0x4f1, (uint8_t[]){ max_voltage >> 8, max_voltage }, 2);
+    CAN_transmit(0x4f2, (uint8_t[]){ min_voltage >> 8, min_voltage }, 2);
+    CAN_transmit(0x4f3, (uint8_t[]){ tmax >> 8, tmax }, 2);
+    CAN_transmit(0x4f4, (uint8_t[]){ tmin >> 8, tmin }, 2);
 
     // Low power sleep
     if(balancing_mode) {
